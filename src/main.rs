@@ -1,63 +1,52 @@
+use async_std::task;
+use futures::stream::StreamExt;
 use libp2p::{
-    identity::{self, Keypair},
-    PeerId,
-    floodsub::{Topic},
+    identity,
+    swarm::{SwarmEvent},
+    PeerId, Swarm,
+    SwarmBuilder
 };
-use log::{error, info};
-use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use tokio::{fs, io::AsyncBufReadExt, sync::mpsc};
 
-const STORAGE_FILE_PATH: &str = "./data.json";
+#[derive(Debug)]
+struct LiveEditingBehaviour;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync + 'static>>;
-type FileData = Vec<File>;
-
-static KEYS: Lazy<identity::Keypair> = Lazy::new(|| identity::Keypair::generate_ed25519());
-static PEER_ID: Lazy<PeerId> = Lazy::new(|| PeerId::from(KEYS.public()));
-static TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("files"));
-
-#[derive(Serialize, Deserialize, Debug)]
-struct File {
-    id: usize,
-    name: String,
-    description: String,
-    public: bool
+impl libp2p::swarm::SwarmEvent<LiveEditingBehaviour> Behaviour for LiveEditingBehaviour {
+    fn poll_event(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        _param: &mut libp2p::swarm::PollParameters<'_>,
+    ) -> std::task::Poll<Option<SwarmEvent<Self>>> {
+        // Implement your behavior logic here
+        std::task::Poll::Pending
+    }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-enum ListMode {
-    All,
-    One(String)
-}
+fn main() {
+    // Generate a random identity for each node
+    let local_key = identity::Keypair::generate_ed25519();
+    let local_peer_id = PeerId::from(local_key.public());
 
-#[derive(Serialize, Deserialize, Debug)]
-struct ListRequest {
-    mode: ListMode
-}
+    // Build libp2p Swarm
+    let swarm = SwarmBuilder::new(LiveEditingBehaviour)
+        .executor(Box::new(|fut| {
+            tokio::spawn(fut);
+        }))
+        .build(local_peer_id, local_key);
 
-#[derive(Serialize, Deserialize, Debug)]
-struct ListResponse {
-    mode: ListMode,
-    data: File,
-    receiver: String
-}
-
-enum EventType {
-    Response(ListResponse),
-    Input(String)
-}
-
-
-#[tokio::main]
-async fn main() {
-    pretty_env_logger::init();
-
-    info!("My Peer id is {:?}", PEER_ID);
-    let (response_sender, mut response_rcv) = mpsc::unbounded_channel::<String>();
-    let authKeys = Keypair::generate_ed25519();
-    println!("Here are your keypairs {:?}", authKeys);
-
-
+    // Start the libp2p Swarm
+    task::block_on(async {
+        swarm
+            .for_each(|event| async {
+                match event {
+                    SwarmEvent::Behaviour(_) => {
+                        // Handle behavior events
+                    }
+                    SwarmEvent::BehaviourError { error, .. } => {
+                        eprintln!("Error in libp2p behaviour: {:?}", error);
+                    }
+                    _ => {}
+                }
+            })
+            .await;
+    });
 }

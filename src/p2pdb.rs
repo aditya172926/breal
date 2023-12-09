@@ -3,14 +3,67 @@ use futures::{prelude::*, select};
 use libp2p::kad;
 use libp2p::kad::store::MemoryStore;
 use libp2p::kad::Mode;
+// use libp2p::mdns::tokio::Behaviour;
 use libp2p::{
     mdns, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
+    tcp, yamux, PeerId, SwarmBuilder
 };
+use tokio::sync::mpsc;
 use std::error::Error;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum CollaborativeMessage {
+    Insert {position: usize, input: String},
+    Delete {position: usize, length: usize},
+    // MoveCursor{peer_id: PeerId::peer_id, position: usize}
+}
+
+struct CollaborativeEditingProtocol;
+
+// impl libp2p::swarm:: for CollaborativeEditingProtocol {
+//     type event = CollaborativeMessage;
+
+//     fn inject_event(&mut self, event: Self::Event) {
+//         match event {
+//             CollaborativeMessage::Insert { position, input } => {
+//                 println!("Insert {} at position {:?}", input, position);
+//             }
+//             CollaborativeMessage::Delete { position, length } => {
+//                 println!("Message deleted of length {:?} and from position {:?}", length, position);
+//             }
+//             CollaborativeMessage::MoveCursor { peer_id, position } => {
+//                 println!("The cursor of PeerId {:?} moved from position {:?}", peer_id, position);
+//             }
+//         }
+//     }
+// }
+
+#[derive(Debug)]
+enum CustomNetworkEvent {
+    Collaborative(CollaborativeMessage)
+}
+
+#[derive(NetworkBehaviour)]
+struct Behaviour {
+    kademlia: kad::Behaviour<MemoryStore>,
+    mdns: mdns::async_io::Behaviour,
+}
+
+impl Behaviour {
+    fn handle_collaborative_event(&mut self, event: CollaborativeMessage) {
+        match event {
+            CollaborativeMessage::Insert { position, input } => {
+                println!("Insert {} at position {:?}", input, position);
+            }
+            CollaborativeMessage::Delete { position, length } => {
+                println!("Message deleted of length {:?} and from position {:?}", length, position);
+            }
+        }
+    }
+}
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -19,11 +72,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .try_init();
 
     // We create a custom network behaviour that combines Kademlia and mDNS.
-    #[derive(NetworkBehaviour)]
-    struct Behaviour {
-        kademlia: kad::Behaviour<MemoryStore>,
-        mdns: mdns::async_io::Behaviour,
-    }
 
     let mut swarm: libp2p::Swarm<Behaviour> = libp2p::SwarmBuilder::with_new_identity()
         .with_async_std()
@@ -58,13 +106,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Kick it off.
     loop {
         select! {
-        line = stdin.select_next_some() => handle_input_line(&mut swarm.behaviour_mut().kademlia, line.expect("Stdin not to close")),
+        line = stdin.select_next_some() => handle_input_line(&mut swarm.behaviour_mut(), line.expect("Stdin not to close")),
         event = swarm.select_next_some() => match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 println!("Listening in {address:?}");
             },
             SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 for (peer_id, multiaddr) in list {
+                    println!("Discovered peerId: {:?}", peer_id);
                     swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
                 }
             },
@@ -124,7 +173,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn handle_input_line(kademlia: &mut kad::Behaviour<MemoryStore>, line: String) {
+fn handle_input_line(behaviour: &mut Behaviour, line: String) {
+    let kademlia = &mut behaviour.kademlia;
+    // let behaviour = &mut swarm.behaviour_mut();
     let mut args = line.split(' ');
 
     match args.next() {
@@ -195,6 +246,18 @@ fn handle_input_line(kademlia: &mut kad::Behaviour<MemoryStore>, line: String) {
             kademlia
                 .start_providing(key)
                 .expect("Failed to start providing key");
+        }
+        Some("INSERT") => {
+            if let (Some(position_str), Some(input)) = (args.next(), args.next()) {
+                if let Ok(position) = position_str.parse::<usize>() {
+                    let message = CollaborativeMessage::Insert { position, input: input.to_string() };
+                    behaviour.handle_collaborative_event(message);
+                } else {
+                    println!("Invalid position");
+                }
+            } else {
+                println!("Expected position and input");
+            }
         }
         _ => {
             eprintln!("expected GET, GET_PROVIDERS, PUT or PUT_PROVIDER");
